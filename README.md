@@ -8,7 +8,7 @@
 ## প্রধান ফিচারসমূহ
 
 1. **অটোমেটেড স্ক্র্যাপার বট (Background Sync Bot)**:
-   - MEP ERP-তে ক্রেডেনশিয়াল (`mep`, `15387`, `anikanik556`) দিয়ে লগইন করে।
+   - MEP ERP-তে ক্রেডেনশিয়াল (`mep`, `15387`, ``) দিয়ে লগইন করে।
    - **Production Module** -> **Daily Floor Requisition** -> **STR Status** (`mr_status.php`) পেজ থেকে Requisition লিস্ট আনে।
    - প্রতিটি Requisition-এর বিস্তারিত ভিউ (`mr_print_view.php`) থেকে আইটেম কোড, নাম, Req. Qty এবং **Apply Quantity (App. Qty)** সংগ্রহ করে।
    - লাইভ প্রগ্রেস বার সহ ব্যাকগ্রাউন্ড সিঙ্ক সাপোর্ট।
@@ -47,5 +47,5 @@ python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
 - URL: `https://mepgrouperp.com/1027/`
 - Company ID: `mep`
 - Username: `15387`
-- Password: `anikanik556`
+- Password: ``
 - Database: `erpcombd`
