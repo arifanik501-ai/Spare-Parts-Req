@@ -30,12 +30,16 @@ def on_startup():
     init_db()
     push_all_to_firebase()
 
-# Serve static files from frontend
+# Serve static files from frontend (both /static and /frontend for GitHub Pages compatibility)
 frontend_dir = BASE_DIR / "frontend"
 app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
+app.mount("/frontend", StaticFiles(directory=str(frontend_dir)), name="frontend")
 
 @app.get("/")
 def serve_index():
+    root_index = BASE_DIR / "index.html"
+    if root_index.exists():
+        return FileResponse(str(root_index))
     index_file = frontend_dir / "index.html"
     if index_file.exists():
         return FileResponse(str(index_file))

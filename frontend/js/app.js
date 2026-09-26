@@ -1,8 +1,10 @@
-// MEP Floor Requisition Portal Frontend Application (Mobile UI + LocalStorage + Instant Firebase Sync)
+// MEP Floor Requisition Portal Frontend Application
+// Works on BOTH Localhost (Python Bot API) AND GitHub Pages (Direct Firebase Realtime Database Cloud Mode)
 document.addEventListener('DOMContentLoaded', () => {
   const LOCAL_STORAGE_KEY = 'mep_physical_checks_v1';
+  const FIREBASE_REST_BASE = 'https://whatsapp-c10ef-default-rtdb.firebaseio.com/mep_erp';
+  const isGitHubPages = window.location.hostname.includes('github.io');
 
-  // Load saved physical checks from LocalStorage
   function loadLocalPhysicalChecks() {
     try {
       const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
@@ -18,7 +20,6 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (e) {}
   }
 
-  // State
   const state = {
     viewMode: 'items', // 'items' | 'reqs'
     page: 1,
@@ -35,12 +36,13 @@ document.addEventListener('DOMContentLoaded', () => {
     },
     expandedReqs: new Set(),
     physicalMap: loadLocalPhysicalChecks(),
+    cloudItemsCache: null,
+    cloudReqsCache: null,
+    useCloudMode: isGitHubPages,
     syncTimer: null
   };
 
-  // DOM Elements
   const el = {
-    // Stats
     statTotalReqs: document.getElementById('stat-total-reqs'),
     statSyncedReqs: document.getElementById('stat-synced-reqs'),
     statSpareReqs: document.getElementById('stat-spare-reqs'),
@@ -51,7 +53,6 @@ document.addEventListener('DOMContentLoaded', () => {
     firebaseStatusBadge: document.getElementById('firebase-status-badge'),
     firebaseStatusText: document.getElementById('firebase-status-text'),
 
-    // Bot & Sync
     botStatusPill: document.getElementById('bot-status-pill'),
     botStatusText: document.getElementById('bot-status-text'),
     lastSyncTime: document.getElementById('last-sync-time'),
@@ -63,7 +64,6 @@ document.addEventListener('DOMContentLoaded', () => {
     cancelSyncBtn: document.getElementById('cancel-sync-btn'),
     openSyncBtn: document.getElementById('open-sync-btn'),
 
-    // Sync Modal
     syncModal: document.getElementById('sync-modal'),
     closeSyncModalBtn: document.getElementById('close-sync-modal-btn'),
     cancelSyncModalBtn: document.getElementById('cancel-sync-modal-btn'),
@@ -73,7 +73,6 @@ document.addEventListener('DOMContentLoaded', () => {
     syncModalDetails: document.getElementById('sync-modal-details'),
     syncPresetBtns: document.querySelectorAll('.sync-preset-btn'),
 
-    // Filters
     filterEntryBy: document.getElementById('filter-entry-by'),
     filterType: document.getElementById('filter-type'),
     filterStatus: document.getElementById('filter-status'),
@@ -82,7 +81,6 @@ document.addEventListener('DOMContentLoaded', () => {
     filterTdate: document.getElementById('filter-tdate'),
     filterResetBtn: document.getElementById('filter-reset-btn'),
 
-    // Views & Switcher
     viewModeReqsBtn: document.getElementById('view-mode-reqs'),
     viewModeItemsBtn: document.getElementById('view-mode-items'),
     mobileCardsWrapper: document.getElementById('mobile-cards-wrapper'),
@@ -93,17 +91,14 @@ document.addEventListener('DOMContentLoaded', () => {
     tableTitle: document.getElementById('table-title'),
     tableCountBadge: document.getElementById('table-count-badge'),
 
-    // Pagination
     paginationInfo: document.getElementById('pagination-info'),
     prevPageBtn: document.getElementById('prev-page-btn'),
     nextPageBtn: document.getElementById('next-page-btn'),
     pageNumDisplay: document.getElementById('page-num-display'),
     pageSizeSelect: document.getElementById('page-size-select'),
 
-    // Export
     exportBtn: document.getElementById('export-btn'),
 
-    // Detail Modal
     detailModal: document.getElementById('detail-modal'),
     closeModalBtn: document.getElementById('close-modal-btn'),
     printModalBtn: document.getElementById('print-modal-btn'),
@@ -154,7 +149,6 @@ document.addEventListener('DOMContentLoaded', () => {
     el.statPhysCount.textContent = fmt(count);
   }
 
-  // Save Physical Receive & Qty instantly to LocalStorage + Firebase + Backend SQLite
   function handlePhysicalUpdate(item, newChecked, newQty) {
     const ikey = item.item_key || makeItemKey(item.req_no, item.item_code, item.sl);
     const reqQty = parseFloat(item.req_qty) || 0;
@@ -178,14 +172,11 @@ document.addEventListener('DOMContentLoaded', () => {
     saveLocalPhysicalChecks(state.physicalMap);
     updatePhysCountUI();
 
-    // 2. Update all matching DOM elements on screen (both Desktop & Mobile)
+    // 2. Update DOM immediately
     document.querySelectorAll(`[data-item-key="${ikey}"]`).forEach(node => {
       if (node.classList.contains('phys-row-container')) {
-        if (checkedInt) {
-          node.classList.add('phys-row-checked');
-        } else {
-          node.classList.remove('phys-row-checked');
-        }
+        if (checkedInt) node.classList.add('phys-row-checked');
+        else node.classList.remove('phys-row-checked');
       }
       const cb = node.querySelector('.phys-checkbox');
       if (cb && cb.checked !== Boolean(checkedInt)) {
@@ -214,17 +205,24 @@ document.addEventListener('DOMContentLoaded', () => {
           el.firebaseStatusText.textContent = 'Synced ✓';
         }
       }).catch(() => {});
+    } else {
+      fetch(`${FIREBASE_REST_BASE}/physical_checks/${ikey}.json`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(record)
+      }).catch(() => {});
     }
 
-    // 4. Backend SQLite sync
-    fetch('/api/physical-check', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(record)
-    }).catch(() => {});
+    // 4. Local Backend SQLite sync (if running locally)
+    if (!state.useCloudMode) {
+      fetch('/api/physical-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(record)
+      }).catch(() => {});
+    }
   }
 
-  // Subscribe to Firebase Realtime Database for live multi-device updates
   function initFirebaseListeners() {
     if (!window.firebaseRealtime) return;
     window.firebaseRealtime.subscribePhysicalChecks((remoteMap) => {
@@ -233,7 +231,6 @@ document.addEventListener('DOMContentLoaded', () => {
       saveLocalPhysicalChecks(state.physicalMap);
       updatePhysCountUI();
 
-      // Update live DOM elements if visible
       Object.entries(remoteMap).forEach(([ikey, rec]) => {
         if (!rec) return;
         document.querySelectorAll(`[data-item-key="${ikey}"]`).forEach(node => {
@@ -272,12 +269,86 @@ document.addEventListener('DOMContentLoaded', () => {
     window.addEventListener('firebase-ready', initFirebaseListeners);
   }
 
+  // Cloud Data Helpers for GitHub Pages
+  async function ensureCloudData(forceRefresh = false) {
+    if (!forceRefresh && state.cloudItemsCache && state.cloudReqsCache) {
+      return;
+    }
+    const [itemsRes, reqsRes, physRes] = await Promise.all([
+      fetch(`${FIREBASE_REST_BASE}/flat_items.json`),
+      fetch(`${FIREBASE_REST_BASE}/requisitions.json`),
+      fetch(`${FIREBASE_REST_BASE}/physical_checks.json`)
+    ]);
+    const itemsObj = (await itemsRes.json()) || {};
+    const reqsObj = (await reqsRes.json()) || {};
+    const physObj = (await physRes.json()) || {};
+
+    state.physicalMap = { ...physObj, ...state.physicalMap };
+    saveLocalPhysicalChecks(state.physicalMap);
+
+    state.cloudItemsCache = Object.values(itemsObj).filter(it => it && it.req_no);
+    state.cloudItemsCache.sort((a, b) => {
+      if ((b.req_date || '') !== (a.req_date || '')) return (b.req_date || '').localeCompare(a.req_date || '');
+      return Number(b.req_no || 0) - Number(a.req_no || 0);
+    });
+
+    state.cloudReqsCache = Object.values(reqsObj).filter(r => r && r.req_no);
+    state.cloudReqsCache.sort((a, b) => {
+      if ((b.req_date || '') !== (a.req_date || '')) return (b.req_date || '').localeCompare(a.req_date || '');
+      return Number(b.req_no || 0) - Number(a.req_no || 0);
+    });
+  }
+
+  function filterCloudItems() {
+    const all = state.cloudItemsCache || [];
+    const f = state.filters;
+    return all.filter(it => {
+      if (f.entry_by && it.entry_by !== f.entry_by) return false;
+      if (f.type && it.req_type !== f.type) return false;
+      if (f.status && it.req_status !== f.status) return false;
+      if (f.fdate && (it.req_date || '') < f.fdate) return false;
+      if (f.tdate && (it.req_date || '') > f.tdate) return false;
+      if (f.search) {
+        const s = f.search.toLowerCase();
+        const hay = `${it.req_no} ${it.manual_req_no || ''} ${it.item_code || ''} ${it.product_name || ''} ${it.req_from || ''}`.toLowerCase();
+        if (!hay.includes(s)) return false;
+      }
+      return true;
+    });
+  }
+
+  function filterCloudReqs() {
+    const all = state.cloudReqsCache || [];
+    const f = state.filters;
+    return all.filter(r => {
+      if (f.entry_by && r.entry_by !== f.entry_by) return false;
+      if (f.type && r.req_type !== f.type) return false;
+      if (f.status && r.status !== f.status) return false;
+      if (f.fdate && (r.req_date || '') < f.fdate) return false;
+      if (f.tdate && (r.req_date || '') > f.tdate) return false;
+      if (f.search) {
+        const s = f.search.toLowerCase();
+        const hay = `${r.req_no} ${r.manual_req_no || ''} ${r.req_from || ''} ${r.warehouse || ''}`.toLowerCase();
+        if (!hay.includes(s)) return false;
+      }
+      return true;
+    });
+  }
+
   // Load KPI Stats
   async function loadStats() {
     try {
-      const res = await fetch('/api/stats');
-      if (!res.ok) return;
-      const data = await res.json();
+      let data = null;
+      if (!state.useCloudMode) {
+        const res = await fetch('/api/stats');
+        if (res.ok) data = await res.json();
+        else state.useCloudMode = true;
+      }
+      if (state.useCloudMode) {
+        const res = await fetch(`${FIREBASE_REST_BASE}/stats.json`);
+        data = await res.json();
+      }
+      if (!data) return;
       el.statTotalReqs.textContent = fmt(data.total_requisitions);
       el.statSyncedReqs.textContent = fmt(data.synced_details_count);
       el.statSpareReqs.textContent = fmt(data.spare_parts_requisitions);
@@ -293,13 +364,21 @@ document.addEventListener('DOMContentLoaded', () => {
   // Load Dropdown Filter Options
   async function loadFilters() {
     try {
-      const res = await fetch('/api/filters');
-      if (!res.ok) return;
-      const data = await res.json();
+      let data = null;
+      if (!state.useCloudMode) {
+        const res = await fetch('/api/filters');
+        if (res.ok) data = await res.json();
+        else state.useCloudMode = true;
+      }
+      if (state.useCloudMode) {
+        const res = await fetch(`${FIREBASE_REST_BASE}/filters.json`);
+        data = await res.json();
+      }
+      if (!data) return;
 
       const curEntryBy = el.filterEntryBy.value;
       el.filterEntryBy.innerHTML = '<option value="">All Entry Persons</option>';
-      data.entry_by.forEach(name => {
+      (data.entry_by || []).forEach(name => {
         const opt = document.createElement('option');
         opt.value = name;
         opt.textContent = name;
@@ -309,7 +388,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const curType = el.filterType.value;
       el.filterType.innerHTML = '<option value="">All Types</option>';
-      data.types.forEach(t => {
+      (data.types || []).forEach(t => {
         const opt = document.createElement('option');
         opt.value = t;
         opt.textContent = t;
@@ -319,7 +398,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const curStatus = el.filterStatus.value;
       el.filterStatus.innerHTML = '<option value="">All Statuses</option>';
-      data.statuses.forEach(s => {
+      (data.statuses || []).forEach(s => {
         const opt = document.createElement('option');
         opt.value = s;
         opt.textContent = s;
@@ -352,7 +431,6 @@ document.addEventListener('DOMContentLoaded', () => {
     return p.toString();
   }
 
-  // Bind Physical Receive Checkbox & Qty Input events to a DOM row or card
   function bindPhysicalControls(container, item) {
     const cb = container.querySelector('.phys-checkbox');
     const inp = container.querySelector('.phys-qty-input');
@@ -396,9 +474,25 @@ document.addEventListener('DOMContentLoaded', () => {
     `;
 
     try {
-      const res = await fetch(`/api/items?${buildQuery()}`);
-      if (!res.ok) throw new Error('API error');
-      const data = await res.json();
+      let data = null;
+      if (!state.useCloudMode) {
+        const res = await fetch(`/api/items?${buildQuery()}`);
+        if (res.ok) {
+          data = await res.json();
+        } else {
+          state.useCloudMode = true;
+        }
+      }
+
+      if (state.useCloudMode) {
+        await ensureCloudData();
+        const filtered = filterCloudItems();
+        const total = filtered.length;
+        const totalPages = Math.max(1, Math.ceil(total / state.pageSize));
+        const start = (state.page - 1) * state.pageSize;
+        const pageItems = filtered.slice(start, start + state.pageSize);
+        data = { items: pageItems, total, total_pages: totalPages };
+      }
 
       state.totalRecords = data.total;
       state.totalPages = data.total_pages;
@@ -468,18 +562,15 @@ document.addEventListener('DOMContentLoaded', () => {
               ${it.req_status || 'N/A'}
             </span>
           </td>
-          <!-- PHYSICAL RECEIVE TICK -->
           <td class="py-2.5 px-3 text-center bg-blue-50/30 border-l border-blue-100">
             <label class="inline-flex items-center justify-center cursor-pointer space-x-1.5">
               <input type="checkbox" class="phys-checkbox" ${physRec ? 'checked' : ''}>
               <span class="text-[11px] font-bold text-slate-700">Receive</span>
             </label>
           </td>
-          <!-- PHYSICAL RECEIVE QTY INPUT -->
           <td class="py-2.5 px-3 text-right bg-blue-50/30">
             <input type="number" step="any" min="0" placeholder="0" value="${physQty > 0 ? physQty : ''}" class="phys-qty-input">
           </td>
-          <!-- PHYSICAL PENDING -->
           <td class="py-2.5 px-3 text-right bg-amber-50/40 border-r border-amber-100">
             <span class="phys-pending-badge inline-block px-2.5 py-1 rounded text-xs font-black ${pendBadgeClass}">
               ${physPending}
@@ -523,7 +614,6 @@ document.addEventListener('DOMContentLoaded', () => {
             </div>
           </div>
 
-          <!-- 3-Box Qty Summary on Mobile -->
           <div class="grid grid-cols-3 gap-2 bg-slate-50 p-2 rounded-lg border border-slate-200/80 text-center">
             <div>
               <p class="text-[10px] font-bold text-slate-400 uppercase">Req Qty</p>
@@ -539,7 +629,6 @@ document.addEventListener('DOMContentLoaded', () => {
             </div>
           </div>
 
-          <!-- Touch-Friendly Physical Receive Bar -->
           <div class="grid grid-cols-2 gap-2 pt-1 items-center">
             <label class="flex items-center space-x-2.5 bg-blue-50/80 hover:bg-blue-100/70 border border-blue-200 rounded-lg px-3 py-2 cursor-pointer select-none">
               <input type="checkbox" class="phys-checkbox" ${physRec ? 'checked' : ''}>
@@ -563,7 +652,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Render Requisitions View (Desktop Table + Mobile Cards)
+  // Render Requisitions View
   async function loadRequisitions() {
     el.reqsTbody.innerHTML = `
       <tr>
@@ -581,9 +670,25 @@ document.addEventListener('DOMContentLoaded', () => {
     `;
 
     try {
-      const res = await fetch(`/api/requisitions?${buildQuery()}`);
-      if (!res.ok) throw new Error('API error');
-      const data = await res.json();
+      let data = null;
+      if (!state.useCloudMode) {
+        const res = await fetch(`/api/requisitions?${buildQuery()}`);
+        if (res.ok) {
+          data = await res.json();
+        } else {
+          state.useCloudMode = true;
+        }
+      }
+
+      if (state.useCloudMode) {
+        await ensureCloudData();
+        const filtered = filterCloudReqs();
+        const total = filtered.length;
+        const totalPages = Math.max(1, Math.ceil(total / state.pageSize));
+        const start = (state.page - 1) * state.pageSize;
+        const pageItems = filtered.slice(start, start + state.pageSize);
+        data = { items: pageItems, total, total_pages: totalPages };
+      }
 
       state.totalRecords = data.total;
       state.totalPages = data.total_pages;
@@ -606,7 +711,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const isExpanded = state.expandedReqs.has(r.req_no);
         const statusClass = `status-${(r.status || '').replace(/\s+/g, '-')}`;
 
-        // Desktop Row
         const tr = document.createElement('tr');
         tr.className = 'hover:bg-blue-50/40 cursor-pointer transition-colors duration-150 border-b border-slate-100';
         tr.dataset.reqNo = r.req_no;
@@ -628,7 +732,7 @@ document.addEventListener('DOMContentLoaded', () => {
           </td>
           <td class="py-3 px-3 font-medium text-slate-700">${r.entry_by || '-'}</td>
           <td class="py-3 px-3 text-center">
-            <span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-700">${r.item_count}</span>
+            <span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-700">${r.item_count || 0}</span>
           </td>
           <td class="py-3 px-3 text-right font-medium text-slate-700">${fmt(r.total_req_qty)}</td>
           <td class="py-3 px-3 text-right">
@@ -659,7 +763,6 @@ document.addEventListener('DOMContentLoaded', () => {
           renderExpandedRow(r.req_no, tr);
         }
 
-        // Mobile Requisition Card
         const mCard = document.createElement('div');
         mCard.className = 'bg-white rounded-xl border border-slate-200 p-3.5 shadow-xs space-y-2';
         mCard.innerHTML = `
@@ -673,7 +776,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <span><strong>Date:</strong> ${r.req_date || '-'}</span>
           </div>
           <div class="flex items-center justify-between pt-2 border-t border-slate-100 text-xs">
-            <span>Items: <strong>${r.item_count}</strong> | Req: <strong>${fmt(r.total_req_qty)}</strong> | App: <strong class="text-emerald-700">${fmt(r.total_app_qty)}</strong></span>
+            <span>Items: <strong>${r.item_count || 0}</strong> | Req: <strong>${fmt(r.total_req_qty)}</strong> | App: <strong class="text-emerald-700">${fmt(r.total_app_qty)}</strong></span>
             <button class="m-open-voucher px-3 py-1 bg-blue-600 text-white font-semibold rounded-lg text-xs">
               View Items
             </button>
@@ -722,9 +825,6 @@ document.addEventListener('DOMContentLoaded', () => {
             <span class="font-bold text-xs text-slate-700 uppercase">
               <i class="fa-solid fa-boxes-stacked text-blue-600 mr-1"></i> Requisition #${reqNo} Line Items & Physical Receive
             </span>
-            <button class="fetch-refresh-btn text-xs text-blue-600 hover:text-blue-800 font-semibold">
-              <i class="fa-solid fa-arrows-rotate mr-1"></i> Re-fetch from ERP
-            </button>
           </div>
           <div class="items-content-box">
             <div class="py-4 text-center text-slate-400 text-xs">
@@ -737,24 +837,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
     parentTr.parentNode.insertBefore(childTr, parentTr.nextSibling);
     const contentBox = childTr.querySelector('.items-content-box');
-    const refreshBtn = childTr.querySelector('.fetch-refresh-btn');
-
-    refreshBtn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      contentBox.innerHTML = `<div class="py-4 text-center text-slate-400 text-xs"><i class="fa-solid fa-spinner fa-spin mr-1 text-blue-600"></i> Scraping latest details from ERP...</div>`;
-      await fetch(`/api/requisitions/${reqNo}/sync`, { method: 'POST' });
-      await fetchAndRenderChildItems(reqNo, contentBox);
-      loadStats();
-    });
-
     await fetchAndRenderChildItems(reqNo, contentBox);
+  }
+
+  async function fetchRequisitionDetailData(reqNo) {
+    if (!state.useCloudMode) {
+      const res = await fetch(`/api/requisitions/${reqNo}?auto_fetch=true`);
+      if (res.ok) return await res.json();
+    }
+    const [reqRes, itemsRes] = await Promise.all([
+      fetch(`${FIREBASE_REST_BASE}/requisitions/${reqNo}.json`),
+      fetch(`${FIREBASE_REST_BASE}/requisition_items/${reqNo}.json`)
+    ]);
+    const reqObj = (await reqRes.json()) || { req_no: reqNo };
+    const itemsArr = (await itemsRes.json()) || [];
+    reqObj.items = Array.isArray(itemsArr) ? itemsArr : Object.values(itemsArr);
+    return reqObj;
   }
 
   async function fetchAndRenderChildItems(reqNo, container) {
     try {
-      const res = await fetch(`/api/requisitions/${reqNo}?auto_fetch=true`);
-      if (!res.ok) throw new Error('Failed to fetch requisition details');
-      const data = await res.json();
+      const data = await fetchRequisitionDetailData(reqNo);
       const items = data.items || [];
 
       if (items.length === 0) {
@@ -845,9 +948,7 @@ document.addEventListener('DOMContentLoaded', () => {
     el.modalItemsTbody.innerHTML = `<tr><td colspan="9" class="py-6 text-center text-slate-400">Loading voucher...</td></tr>`;
 
     try {
-      const res = await fetch(`/api/requisitions/${reqNo}?auto_fetch=true`);
-      if (!res.ok) throw new Error('Voucher not found');
-      const r = await res.json();
+      const r = await fetchRequisitionDetailData(reqNo);
 
       el.modalManualReq.textContent = r.manual_req_no || '-';
       el.modalSection.textContent = r.req_from || '-';
@@ -857,7 +958,7 @@ document.addEventListener('DOMContentLoaded', () => {
       el.modalPreparedBy.textContent = r.entry_by || 'Prepared By';
 
       const statusClass = `status-${(r.status || '').replace(/\s+/g, '-')}`;
-      el.modalStatusBadge.innerHTML = `<span class="px-2 py-0.5 rounded text-[10px] font-bold ${statusClass}">${r.status}</span>`;
+      el.modalStatusBadge.innerHTML = `<span class="px-2 py-0.5 rounded text-[10px] font-bold ${statusClass}">${r.status || ''}</span>`;
 
       const items = r.items || [];
       el.modalItemsTbody.innerHTML = '';
@@ -883,10 +984,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Poll Sync Status
   let wasSyncing = false;
   let liveRefreshCounter = 0;
   async function checkSyncStatus() {
+    if (state.useCloudMode) {
+      if (el.botStatusText) el.botStatusText.textContent = 'Cloud: Firebase Live';
+      return;
+    }
     try {
       const res = await fetch('/api/sync/status');
       if (!res.ok) return;
@@ -925,7 +1029,9 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (e) {}
   }
 
-  state.syncTimer = setInterval(checkSyncStatus, 2000);
+  if (!isGitHubPages) {
+    state.syncTimer = setInterval(checkSyncStatus, 2000);
+  }
 
   // View Switcher Events
   el.viewModeItemsBtn.addEventListener('click', () => {
@@ -952,7 +1058,6 @@ document.addEventListener('DOMContentLoaded', () => {
     loadData();
   });
 
-  // Filters
   el.filterEntryBy.addEventListener('change', () => {
     state.filters.entry_by = el.filterEntryBy.value;
     state.page = 1;
@@ -1025,19 +1130,57 @@ document.addEventListener('DOMContentLoaded', () => {
     loadData();
   });
 
-  el.exportBtn.addEventListener('click', () => {
-    const q = new URLSearchParams();
-    q.append('mode', state.viewMode === 'reqs' ? 'requisitions' : 'items');
-    if (state.filters.entry_by) q.append('entry_by', state.filters.entry_by);
-    if (state.filters.type) q.append('type', state.filters.type);
-    if (state.filters.status) q.append('status', state.filters.status);
-    if (state.filters.search) q.append('search', state.filters.search);
-    if (state.filters.fdate) q.append('fdate', state.filters.fdate);
-    if (state.filters.tdate) q.append('tdate', state.filters.tdate);
-    window.location.href = `/api/export?${q.toString()}`;
+  el.exportBtn.addEventListener('click', async () => {
+    if (!state.useCloudMode) {
+      const q = new URLSearchParams();
+      q.append('mode', state.viewMode === 'reqs' ? 'requisitions' : 'items');
+      if (state.filters.entry_by) q.append('entry_by', state.filters.entry_by);
+      if (state.filters.type) q.append('type', state.filters.type);
+      if (state.filters.status) q.append('status', state.filters.status);
+      if (state.filters.search) q.append('search', state.filters.search);
+      if (state.filters.fdate) q.append('fdate', state.filters.fdate);
+      if (state.filters.tdate) q.append('tdate', state.filters.tdate);
+      window.location.href = `/api/export?${q.toString()}`;
+      return;
+    }
+    // Client-side CSV Export for GitHub Pages
+    await ensureCloudData();
+    const items = filterCloudItems();
+    const rows = [
+      ['Req No', 'Date', 'Section', 'Type', 'Entry By', 'Item Code', 'Product Name', 'Req Qty', 'App Qty', 'Unit', 'Status', 'Physical Receive', 'Physical Rec Qty', 'Physical Pending']
+    ];
+    items.forEach(it => {
+      const { physRec, physQty, physPending } = getPhysicalState(it);
+      rows.push([
+        it.req_no, it.req_date || '', it.req_from || '', it.req_type || '',
+        it.entry_by || '', it.item_code || '', `"${(it.product_name || '').replace(/"/g, '""')}"`,
+        it.req_qty || 0, it.app_qty || 0, it.unit || '', it.req_status || '',
+        physRec ? 'YES' : 'NO', physQty, physPending
+      ]);
+    });
+    const csvContent = rows.map(r => r.join(',')).join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'mep_floor_requisitions_items.csv';
+    a.click();
   });
 
-  el.openSyncBtn.addEventListener('click', () => el.syncModal.classList.remove('hidden'));
+  el.openSyncBtn.addEventListener('click', async () => {
+    if (state.useCloudMode) {
+      // On GitHub Pages, refresh latest snapshot from Firebase Cloud
+      el.openSyncBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1"></i> Syncing Cloud...';
+      await ensureCloudData(true);
+      await loadStats();
+      await loadFilters();
+      await loadData();
+      el.openSyncBtn.innerHTML = '<i class="fa-solid fa-arrows-rotate sm:mr-2"></i><span class="hidden sm:inline">Refresh Cloud</span><span class="sm:hidden ml-1">Sync</span>';
+      return;
+    }
+    el.syncModal.classList.remove('hidden');
+  });
+
   el.closeSyncModalBtn.addEventListener('click', () => el.syncModal.classList.add('hidden'));
   el.cancelSyncModalBtn.addEventListener('click', () => el.syncModal.classList.add('hidden'));
 
@@ -1095,19 +1238,25 @@ document.addEventListener('DOMContentLoaded', () => {
   el.printModalBtn.addEventListener('click', () => window.print());
 
   // Initialize
-  init_db_checks();
-  async function init_db_checks() {
-    try {
-      const res = await fetch('/api/physical-checks');
-      if (res.ok) {
-        const dbChecks = await res.json();
-        state.physicalMap = { ...dbChecks, ...state.physicalMap };
-        saveLocalPhysicalChecks(state.physicalMap);
+  init_app();
+  async function init_app() {
+    if (!state.useCloudMode) {
+      try {
+        const res = await fetch('/api/physical-checks');
+        if (res.ok) {
+          const dbChecks = await res.json();
+          state.physicalMap = { ...dbChecks, ...state.physicalMap };
+          saveLocalPhysicalChecks(state.physicalMap);
+        } else {
+          state.useCloudMode = true;
+        }
+      } catch (e) {
+        state.useCloudMode = true;
       }
-    } catch (e) {}
+    }
     loadStats();
     loadFilters();
     loadData();
-    checkSyncStatus();
+    if (!state.useCloudMode) checkSyncStatus();
   }
 });
